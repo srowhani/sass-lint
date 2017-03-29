@@ -2,14 +2,19 @@
 
 var slConfig = require('./lib/config'),
     groot = require('./lib/groot'),
+    exceptions = require('./lib/exceptions'),
     helpers = require('./lib/helpers'),
     slRules = require('./lib/rules'),
+    ruleToggler = require('./lib/ruleToggler'),
     glob = require('glob'),
     path = require('path'),
     fs = require('fs-extra'),
     globule = require('globule');
 
-var sassLint = function (config) {
+var getToggledRules = ruleToggler.getToggledRules,
+    isResultEnabled = ruleToggler.isResultEnabled;
+
+var sassLint = function (config) { // eslint-disable-line no-unused-vars
   config = require('./lib/config')(config);
   return;
 };
@@ -101,7 +106,10 @@ sassLint.lintText = function (file, options, configPath) {
       detects,
       results = [],
       errors = 0,
-      warnings = 0;
+      warnings = 0,
+      ruleToggles = null,
+      isEnabledFilter = null;
+
   try {
     ast = groot(file.text, file.format, file.filename);
   }
@@ -116,18 +124,25 @@ sassLint.lintText = function (file, options, configPath) {
       severity: 2
     }];
   }
-  if (ast && ast.content && ast.content.length > 0) {
-    var queuedFix = false;
-    rules.forEach((rule) => {
-      detects = rule.rule.detect(ast, rule);
-      if (options['fix'] !== undefined) {
-        detects.forEach((d) => {
-          if (typeof d['fix'] === 'function') {
-            queuedFix = true;
-            d.fix(file.format); //modifies tree based on fix params
-          }
-        });
+
+  if (ast.content && ast.content.length > 0) {
+    ruleToggles = getToggledRules(ast);
+    isEnabledFilter = isResultEnabled(ruleToggles);
+
+    rules.forEach(function (rule) {
+      detects = rule.rule.detect(ast, rule)
+        .filter(isEnabledFilter);
+
+      if (detects && options.fix && rule.rule.fix) {
+        if (options.verbose) {
+          helpers.log('[' + rule.rule.name + '] on [' + file.filename + ']');
+        }
+        rule.rule.fix(ast, rule);
+        detects = rule.rule.detect(ast, rule)
+          .filter(isEnabledFilter);
+
       }
+
       results = results.concat(detects);
       if (detects.length) {
         if (rule.severity === 1) {
@@ -138,9 +153,9 @@ sassLint.lintText = function (file, options, configPath) {
         }
       }
     });
-    if (options.fix !== undefined && queuedFix === true) {
-      var r = ast.toString();
-      fs.writeFileSync(file.filename, r);
+    if (options.fix) {
+      var filename = file.path || file.filename;
+      fs.writeFileSync(filename, ast.toString());
     }
   }
 
@@ -200,11 +215,11 @@ sassLint.lintFiles = function (files, options, configPath) {
     ignores = this.getConfig(options, configPath).files.ignore || '';
     if (files.indexOf(', ') !== -1) {
       files.split(', ').forEach(function (pattern) {
-        includes = includes.concat(glob.sync(pattern, {ignore: ignores}));
+        includes = includes.concat(glob.sync(pattern, {ignore: ignores, nodir: true}));
       });
     }
     else {
-      includes = glob.sync(files, {ignore: ignores});
+      includes = glob.sync(files, {ignore: ignores, nodir: true});
     }
   }
   // If not passed in then we look in the config file
@@ -212,19 +227,17 @@ sassLint.lintFiles = function (files, options, configPath) {
     files = this.getConfig(options, configPath).files;
     // A glob pattern of files can be just a string
     if (typeof files === 'string') {
-      includes = glob.sync(files);
+      includes = glob.sync(files, {nodir: true});
     }
     // Look into the include property of files and check if there's an array of files
     else if (files.include && files.include instanceof Array) {
       files.include.forEach(function (pattern) {
-        includes = includes.concat(glob.sync(pattern, {ignore: files.ignore}));
+        includes = includes.concat(glob.sync(pattern, {ignore: files.ignore, nodir: true}));
       });
     }
     // Or there is only one pattern in the include property of files
     else {
-      includes = glob.sync(files.include, {
-        'ignore': files.ignore
-      });
+      includes = glob.sync(files.include, {ignore: files.ignore, nodir: true});
     }
   }
 
@@ -296,14 +309,30 @@ sassLint.outputResults = function (results, options, configPath) {
  * Throws an error if there are any errors detected. The error includes a count of all errors
  * and a list of all files that include errors.
  *
- * @param {object} results our results object
+ * @param {object} results - our results object
+ * @param {object} [options] - extra options to use when running failOnError, e.g. max-warnings
+ * @param {string} [configPath] - path to the config file
  * @returns {void}
  */
-sassLint.failOnError = function (results) {
-  var errorCount = this.errorCount(results);
+sassLint.failOnError = function (results, options, configPath) {
+  // Default parameters
+  options = typeof options !== 'undefined' ? options : {};
+  configPath = typeof configPath !== 'undefined' ? configPath : null;
+
+  var errorCount = this.errorCount(results),
+      warningCount = this.warningCount(results),
+      configOptions = this.getConfig(options, configPath).options;
 
   if (errorCount.count > 0) {
-    throw new Error(errorCount.count + ' errors were detected in \n- ' + errorCount.files.join('\n- '));
+    throw new exceptions.SassLintFailureError(errorCount.count + ' errors were detected in \n- ' + errorCount.files.join('\n- '));
+  }
+
+  if (!isNaN(configOptions['max-warnings']) && warningCount.count > configOptions['max-warnings']) {
+    throw new exceptions.MaxWarningsExceededError(
+      'Number of warnings (' + warningCount.count +
+      ') exceeds the allowed maximum of ' + configOptions['max-warnings'] +
+      '.\n'
+    );
   }
 };
 
