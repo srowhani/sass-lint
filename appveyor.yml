@@ -5,14 +5,10 @@ init:
 # Test against this version of Node.js
 environment:
   matrix:
-    - nodejs_version: '0.12'
-    # io.js
-    - nodejs_version: '1'
     - nodejs_version: '4'
     - nodejs_version: '5'
-    # Latest stable version of Node
+      # Latest stable version of Node
     - nodejs_version: 'stable'
-
 
 # Install scripts. (runs after repo cloning)
 install:
@@ -20,8 +16,6 @@ install:
   - ps: Install-Product node $env:nodejs_version
   # install modules
   - npm install
-  # link
-  - npm link
 
 # Post-install test scripts.
 test_script:
