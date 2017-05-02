@@ -1,7 +1,10 @@
 'use strict';
 
 var assert = require('assert'),
-    lint = require('../index');
+    equal = require('deep-equal'),
+    lint = require('../index'),
+    fs = require('fs'),
+    sinon = require('sinon');
 
 var lintFile = function lintFile (file, options, cb) {
   cb = cb || options;
@@ -60,7 +63,26 @@ var resultsObj = [{
     severity: 2
   }]
 }];
-
+var emptyResult = {
+  filePath: 'tests/cli/cli.scss',
+  warningCount: 0,
+  errorCount: 0,
+  messages: []
+};
+var oneWarningResult = {
+  filePath: 'tests/cli/cli.scss',
+  warningCount: 1,
+  errorCount: 0,
+  messages: [
+    {
+      ruleId: 'no-color-literals',
+      line: 2,
+      column: 10,
+      message: 'Color literals such as \'red\' should only be used in variable declarations',
+      severity: 1
+    }
+  ]
+};
 var multiInputResults = [{
   filePath: 'tests/cli/cli-error.sass',
   warningCount: 1,
@@ -84,7 +106,6 @@ var multiInputResults = [{
     severity: 1
   }]
 }];
-
 var stringInputResults = [{
   filePath: 'tests/cli/cli-error.sass',
   warningCount: 1,
@@ -99,63 +120,150 @@ var stringInputResults = [{
 }];
 
 describe('sass lint', function () {
+  describe('default functionality', function () {
 
-  // ==============================================================================
-  //  Not Error on Empty Files
-  // ==============================================================================
+    // ==============================================================================
+    //  Not Error on Empty Files
+    // ==============================================================================
 
-  it('should not error if a file is empty', function (done) {
-    lintFile('empty-file.scss', function (data) {
-      assert.equal(0, data.warningCount);
-      assert.equal(0, data.errorCount);
-      assert.equal(0, data.messages.length);
-      done();
+    it('should not error if a file is empty', function (done) {
+      lintFile('empty-file.scss', function (data) {
+        assert.equal(0, data.warningCount);
+        assert.equal(0, data.errorCount);
+        assert.equal(0, data.messages.length);
+        done();
+      });
+    });
+
+    // ==============================================================================
+    //  Not try to read directories
+    // ==============================================================================
+    it('should not try to blindly read and lint a directory', function (done) {
+      var fileSpy = sinon.spy(lint, 'lintText');
+      lintFiles('tests/dir-test/**/*.scss', {
+        options: {
+          'merge-default-rules': false
+        },
+        rules: {
+          'no-ids': 1
+        }}, '', function (data) {
+          assert.equal(1, data[0].warningCount);
+          assert.equal(0, data[0].errorCount);
+          assert.equal(1, data[0].messages.length);
+
+          assert(fileSpy.called);
+          assert(fileSpy.calledOnce);
+          assert(fileSpy.calledWithMatch({format: 'scss', filename: 'tests/dir-test/dir.scss/test.scss'}));
+          assert(fileSpy.neverCalledWithMatch({filename: 'tests/dir-test/dir.scss'}));
+          fileSpy.reset();
+          done();
+        }
+      );
+    });
+
+    // ==============================================================================
+    //  Parse files with YAML front matter
+    // ==============================================================================
+
+    it('should parse a file with front matter correctly and without parse error', function (done) {
+      lintFile('front-matter/front-matter.scss', function (data) {
+        assert.equal(0, data.errorCount);
+        assert.equal(2, data.warningCount);
+        done();
+      });
+    });
+
+    // ==============================================================================
+    //  Parse Errors should return as lint errors
+    // ==============================================================================
+
+    it('Parse Errors should return as lint errors', function (done) {
+      lintFile('parse.scss', function (data) {
+        assert.equal(1, data.errorCount);
+        done();
+      });
+    });
+
+    it('Parse Errors should not include warnings too', function (done) {
+      lintFile('parse.scss', function (data) {
+        assert.equal(0, data.warningCount);
+        done();
+      });
+    });
+
+    it('Parse Errors should return as severity 2', function (done) {
+      lintFile('parse.scss', function (data) {
+        var severity = data.messages[0].severity;
+
+        assert.equal(2, severity);
+        done();
+      });
+    });
+
+    it('Parse Errors should return the correct error message', function (done) {
+      lintFile('parse.scss', function (data) {
+        var message = data.messages[0].message,
+            expected = 'Please check validity of the block starting from line #5';
+
+        assert.equal(expected, message);
+        done();
+      });
+    });
+
+    it('Parse Errors should return the rule ID \'Fatal\'', function (done) {
+      lintFile('parse.scss', function (data) {
+        var ruleId = data.messages[0].ruleId,
+            expected = 'Fatal';
+
+        assert.equal(expected, ruleId);
+        done();
+      });
     });
   });
 
   // ==============================================================================
-  //  Parse Errors should return as lint errors
+  //  lintFileText
   // ==============================================================================
 
-  it('Parse Errors should return as lint errors', function (done) {
-    lintFile('parse.scss', function (data) {
-      assert.equal(1, data.errorCount);
+
+  describe('lintFileText', function () {
+    var file,
+        fileObj;
+
+    beforeEach(function () {
+      file = fs.readFileSync('tests/cli/cli.scss');
+      fileObj = {
+        'text': file,
+        'format': 'scss',
+        'filename': 'tests/cli/cli.scss'
+      };
+    });
+
+    it('should ignore a file from the ignore section of a config file', function (done) {
+      var result = lint.lintFileText(fileObj, {options: {'cache-config': false}}, 'tests/yml/.ignore-file.yml');
+      assert(
+        equal(
+          result,
+          emptyResult,
+          {
+            'strict': true
+          }
+        )
+      );
       done();
     });
-  });
 
-  it('Parse Errors should not include warnings too', function (done) {
-    lintFile('parse.scss', function (data) {
-      assert.equal(0, data.warningCount);
-      done();
-    });
-  });
-
-  it('Parse Errors should return as severity 2', function (done) {
-    lintFile('parse.scss', function (data) {
-      var severity = data.messages[0].severity;
-
-      assert.equal(2, severity);
-      done();
-    });
-  });
-
-  it('Parse Errors should return the correct error message', function (done) {
-    lintFile('parse.scss', function (data) {
-      var message = data.messages[0].message,
-          expected = 'Please check validity of the block starting from line #5';
-
-      assert.equal(expected, message);
-      done();
-    });
-  });
-
-  it('Parse Errors should return the rule ID \'Fatal\'', function (done) {
-    lintFile('parse.scss', function (data) {
-      var ruleId = data.messages[0].ruleId,
-          expected = 'Fatal';
-
-      assert.equal(expected, ruleId);
+    it('should lint a file when no ignores are specified', function (done) {
+      var result = lint.lintFileText(fileObj, {options: {'cache-config': false}}, 'tests/yml/.no-merge-default.yml');
+      assert(
+        equal(
+          result,
+          oneWarningResult,
+          {
+            'strict': true
+          }
+        )
+      );
       done();
     });
   });
